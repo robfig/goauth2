@@ -42,6 +42,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -90,7 +91,7 @@ func (f CacheFile) PutToken(tok *Token) error {
 type Config struct {
 	ClientId     string
 	ClientSecret string
-	Scope	string
+	Scope        string
 	AuthURL      string
 	TokenURL     string
 	RedirectURL  string // Defaults to out-of-band mode if empty.
@@ -172,8 +173,8 @@ func (c *Config) AuthCodeURL(state string) string {
 		"response_type":   {"code"},
 		"client_id":       {c.ClientId},
 		"redirect_uri":    {c.redirectURL()},
-		"scope":	   {c.Scope},
-		"state":	   {state},
+		"scope":           {c.Scope},
+		"state":           {state},
 		"access_type":     {c.AccessType},
 		"approval_prompt": {c.ApprovalPrompt},
 	}.Encode()
@@ -205,8 +206,8 @@ func (t *Transport) Exchange(code string) (*Token, error) {
 	err := t.updateToken(tok, url.Values{
 		"grant_type":   {"authorization_code"},
 		"redirect_uri": {t.redirectURL()},
-		"scope":	{t.Scope},
-		"code":	 {code},
+		"scope":        {t.Scope},
+		"code":         {code},
 	})
 	if err != nil {
 		return nil, err
@@ -285,14 +286,37 @@ func (t *Transport) updateToken(tok *Token, v url.Values) error {
 	if r.StatusCode != 200 {
 		return OAuthError{"updateToken", r.Status}
 	}
-	var b struct {
-		Access    string	`json:"access_token"`
-		Refresh   string	`json:"refresh_token"`
-		ExpiresIn time.Duration `json:"expires_in"`
-	}
-	if err = json.NewDecoder(r.Body).Decode(&b); err != nil {
+
+	body := make([]byte, r.ContentLength)
+	_, err = r.Body.Read(body)
+	if err != nil {
 		return err
 	}
+
+	var b struct {
+		Access    string        `json:"access_token"`
+		Refresh   string        `json:"refresh_token"`
+		ExpiresIn time.Duration `json:"expires_in"`
+	}
+
+	if r.Request.Host == "graph.facebook.com" {
+		vals, err := url.ParseQuery(string(body))
+		if err != nil {
+			return err
+		}
+
+		b.Access = vals.Get("access_token")
+		expires_in, err := strconv.ParseInt(vals.Get("expires"), 10, 64)
+		if err != nil {
+			return err
+		}
+		b.ExpiresIn = time.Duration(expires_in)
+	} else {
+		if err = json.NewDecoder(r.Body).Decode(&b); err != nil {
+			return err
+		}
+	}
+
 	tok.AccessToken = b.Access
 	// Don't overwrite `RefreshToken` with an empty value
 	if len(b.Refresh) > 0 {
